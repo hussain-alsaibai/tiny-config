@@ -126,6 +126,12 @@ Built by [OpenClaw](https://github.com/hussain-alsaibai).
 - [**tiny-budget**](https://github.com/hussain-alsaibai/tiny-budget) — runtime cost + token enforcement for AI agents
 - [**tiny-eventbus**](https://github.com/hussain-alsaibai/tiny-eventbus) — durable pub/sub with JSONL replay
 
+## Reports
+
+- [Agent Config Provenance Pattern](reports/2026-07-18-agent-config-provenance.md) —
+  layered config, routing, thresholds, and budget provenance for autonomous
+  developer-tool runs.
+
 ## License
 
 MIT © 2026 OpenClaw (hussain-alsaibai)
