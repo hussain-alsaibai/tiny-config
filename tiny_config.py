@@ -1,9 +1,12 @@
 """tiny-config: Zero-dependency configuration loader for Python.
 
 Loads from multiple sources with a clear precedence order:
-  defaults < file (json/yaml/ini/env) < env vars < CLI overrides
+  defaults < file (json/yaml/ini/env) < profile < env vars < CLI overrides
 
-Single file, no deps, MIT, 100% typed, public API in 6 functions.
+v0.2.0 adds: schema validation, Docker secrets, profile loading, ${env:VAR}
+interpolation, ${secret:NAME} interpolation.
+
+Single file, no deps, MIT, 100% typed, public API in 10 functions.
 """
 
 from __future__ import annotations
@@ -17,8 +20,21 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Union
 
-__version__ = "0.1.0"
-__all__ = ["load", "load_file", "get", "set", "merge", "from_env"]
+__version__ = "0.2.0"
+
+
+# ---------- Config Errors ----------
+
+
+class ConfigError(Exception):
+    """Raised when config validation fails or required keys are missing."""
+    pass
+
+
+__all__ = [
+    "load", "load_file", "get", "set", "merge", "from_env",
+    "validate", "get_secret", "load_profile", "ConfigError",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +83,11 @@ def _set_dotted(d: Dict[str, Any], dotted_key: str, value: Any) -> None:
             cur[p] = {}
         cur = cur[p]
     cur[parts[-1]] = value
+
+
+def _set_nested(cfg: Dict[str, Any], key: str, value: Any) -> None:
+    """Set a nested key in a dict, creating intermediate dicts as needed."""
+    _set_dotted(cfg, key, value)
 
 
 def _get_dotted(d: Mapping[str, Any], dotted_key: str, default: Any = None) -> Any:
@@ -305,6 +326,239 @@ def set(cfg: Dict[str, Any], key: str, value: Any) -> None:
     _set_dotted(cfg, key, value)
 
 
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
+def validate(
+    cfg: Dict[str, Any],
+    schema: Dict[str, Any],
+    *,
+    strict: bool = False,
+) -> List[Dict[str, Any]]:
+    """Validate a config dict against a simple schema.
+
+    Schema format:
+        {
+            "db.host": {"type": str, "required": True},
+            "db.port": {"type": int, "default": 5432},
+            "debug": {"type": bool, "default": False},
+            "allowed_origins": {"type": list, "required": False},
+        }
+
+    Supported spec keys per field:
+      - ``type``: Python type to check (e.g. ``str``, ``int``, ``bool``, ``list``).
+      - ``required``: bool. If missing and required, an error is reported.
+      - ``default``: value to set when the key is missing (optional).
+      - ``choices``: iterable of allowed values.
+      - ``min`` / ``max``: numeric bounds (inclusive).
+
+    Returns:
+        List of errors: [{"key": "db.host", "message": "required but missing"}]
+
+    Raises:
+        Nothing — errors are returned so callers can decide how to react.
+
+    Usage:
+        errors = validate(cfg, {
+            "db.host": {"type": str, "required": True},
+            "db.port": {"type": int, "default": 5432},
+        })
+        if errors:
+            for e in errors:
+                print(f"Config error: {e['key']}: {e['message']}")
+    """
+    errors: List[Dict[str, Any]] = []
+
+    def _get_nested(c: Dict[str, Any], key: str) -> tuple[Any, bool]:
+        parts = key.split(".")
+        val: Any = c
+        for part in parts:
+            if isinstance(val, dict) and part in val:
+                val = val[part]
+            else:
+                return None, False
+        return val, True
+
+    for key, spec in schema.items():
+        val, found = _get_nested(cfg, key)
+        req = spec.get("required", False)
+        typ = spec.get("type")
+        default = spec.get("default")
+
+        if not found:
+            if req:
+                errors.append({"key": key, "message": "required but missing"})
+            elif default is not None:
+                # Set default via dotted path
+                _set_nested(cfg, key, default)
+            continue
+
+        if typ and val is not None:
+            if not isinstance(val, typ):
+                errors.append({
+                    "key": key,
+                    "message": f"expected {typ.__name__}, got {type(val).__name__}",
+                })
+
+        choices = spec.get("choices")
+        if choices and val not in choices:
+            errors.append({
+                "key": key,
+                "message": f"value '{val}' not in allowed choices: {list(choices)}",
+            })
+
+        min_val = spec.get("min")
+        max_val = spec.get("max")
+        if min_val is not None and isinstance(val, (int, float)) and not isinstance(val, bool) and val < min_val:
+            errors.append({"key": key, "message": f"value {val} below minimum {min_val}"})
+        if max_val is not None and isinstance(val, (int, float)) and not isinstance(val, bool) and val > max_val:
+            errors.append({"key": key, "message": f"value {val} above maximum {max_val}"})
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Secrets loading
+# ---------------------------------------------------------------------------
+
+
+def get_secret(
+    key: str,
+    *,
+    path: str = "/run/secrets",
+    env_fallback: bool = True,
+    raise_if_missing: bool = False,
+) -> str:
+    """Load a secret from Docker secrets or environment.
+
+    Checks, in order:
+    1. File at ``{path}/{key}`` (Docker secrets format)
+    2. Environment variable ``{KEY}`` (uppercase, underscores)
+    3. Environment variable ``{key}`` (as-is)
+
+    Usage:
+        secret = get_secret("openai_api_key")
+        secret = get_secret("db_password", path="/var/secrets")
+    """
+    # Docker secret file
+    if path:
+        secret_file = os.path.join(path, key)
+        if os.path.isfile(secret_file):
+            with open(secret_file, "r", encoding="utf-8") as f:
+                return f.read().strip()
+
+    # Environment variable (uppercase)
+    env_key = key.upper().replace("-", "_").replace(".", "_")
+    if env_fallback and env_key in os.environ:
+        return os.environ[env_key]
+
+    # Environment variable (as-is)
+    if env_fallback and key in os.environ:
+        return os.environ[key]
+
+    if raise_if_missing:
+        raise ConfigError(f"Secret '{key}' not found in {path} or environment")
+
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Profile loading
+# ---------------------------------------------------------------------------
+
+
+def load_profile(
+    name: str,
+    *,
+    base: str = "config",
+    profiles_dir: Optional[str] = None,
+    exts: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Load a named config profile (e.g. dev, staging, prod).
+
+    Looks for profiles in this order:
+    - ``{profiles_dir}/{base}.{name}.{ext}``
+    - ``{profiles_dir}/{name}.{ext}``
+
+    If ``profiles_dir`` is None, uses the directory of ``base`` if ``base`` is a path.
+
+    Usage:
+        cfg = load_profile("production",
+            base="config.yaml",
+            profiles_dir=".",
+        )
+    """
+    if exts is None:
+        exts = ["yaml", "yml", "json", "ini", "env"]
+
+    base_path = os.path.dirname(base) or "."
+    base_name = os.path.splitext(os.path.basename(base))[0]
+
+    candidates = [
+        os.path.join(profiles_dir or base_path, f"{base_name}.{name}.{ext}")
+        for ext in exts
+    ] + [
+        os.path.join(profiles_dir or base_path, f"{name}.{ext}")
+        for ext in exts
+    ]
+
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return load_file(candidate)
+
+    raise ConfigError(
+        f"Profile '{name}' not found. Looked in: {candidates}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Expression evaluation in values
+# ---------------------------------------------------------------------------
+
+
+_ENV_RE = re.compile(r"\$\{env:([^}]+)\}")
+_SECRET_RE = re.compile(r"\$\{secret:([^}]+)\}")
+
+
+def interpolate_env(
+    cfg: Any,
+    *,
+    secret_path: str = "/run/secrets",
+) -> Any:
+    """Recursively replace ``${env:VAR}`` and ``${secret:NAME}`` in config values.
+
+    Returns a new structure with interpolations resolved. String values are
+    scanned for ${env:VAR} and ${secret:NAME} tokens; dicts and lists are
+    descended into. Other types are returned unchanged.
+
+    Usage:
+        cfg = interpolate_env({
+            "db": {"host": "${env:DB_HOST}"},
+            "api_key": "${secret:openai_api_key}",
+        })
+    """
+    if isinstance(cfg, dict):
+        return {k: interpolate_env(v, secret_path=secret_path) for k, v in cfg.items()}
+    if isinstance(cfg, list):
+        return [interpolate_env(v, secret_path=secret_path) for v in cfg]
+    if isinstance(cfg, str):
+        def _env_replace(m: "re.Match[str]") -> str:
+            var = m.group(1)
+            return os.environ.get(var, "")
+
+        def _secret_replace(m: "re.Match[str]") -> str:
+            name = m.group(1)
+            return get_secret(name, path=secret_path) or os.environ.get(
+                name.upper().replace("-", "_"), ""
+            )
+
+        cfg = _ENV_RE.sub(_env_replace, cfg)
+        cfg = _SECRET_RE.sub(_secret_replace, cfg)
+    return cfg
+
+
 def load(
     file: Optional[Union[str, os.PathLike, Sequence[Union[str, os.PathLike]]]] = None,
     *,
@@ -312,20 +566,43 @@ def load(
     env_separator: str = "__",
     cli: bool = True,
     defaults: Optional[Mapping[str, Any]] = None,
+    validate_schema: Optional[Dict[str, Any]] = None,
+    profile: Optional[str] = None,
+    interpolate: bool = True,
+    secret_path: str = "/run/secrets",
     schema: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
-    """One-call loader: defaults < file < env < CLI.
+    """Load configuration from multiple sources with layered precedence.
+
+    Precedence (lowest to highest):
+        defaults < file < profile < env < CLI args
 
     Args:
-        file: Path or list of paths to config files (later overrides earlier).
-        env_prefix: Only env vars starting with this prefix are read.
+        file: Path to config file (JSON, YAML, INI, .env)
+        env_prefix: Prefix for env vars (e.g. "MYAPP" → MYAPP_DEBUG__HOST)
         env_separator: Separator inside env var names (default "__" for OS safety).
         cli: If True, parse --key=value from sys.argv[1:].
         defaults: Default values to seed.
-        schema: Optional list of dotted keys to also expose as --key flags.
+        validate_schema: Schema dict for validation (see :func:`validate`).
+        profile: Named profile to load (dev, staging, prod).
+        interpolate: Expand ``${env:VAR}`` and ``${secret:NAME}`` in values.
+        secret_path: Path to Docker secrets directory.
+        schema: Optional list of dotted keys to also expose as ``--key`` flags.
 
     Returns:
         Merged config dict.
+
+    Usage:
+        cfg = load(
+            file="config.yaml",
+            env_prefix="MYAPP",
+            defaults={"db": {"port": 5432}},
+            validate_schema={
+                "db.host": {"type": str, "required": True},
+                "db.port": {"type": int, "min": 1, "max": 65535},
+            },
+            profile="production",
+        )
     """
     cfg: Dict[str, Any] = {}
     if defaults:
@@ -336,11 +613,26 @@ def load(
             if not Path(fp).exists():
                 continue
             _deep_merge(cfg, load_file(fp))
+    if profile:
+        try:
+            base_path = str(file) if isinstance(file, (str, os.PathLike)) else "config.yaml"
+            profile_cfg = load_profile(profile, base=base_path)
+            _deep_merge(cfg, profile_cfg)
+        except ConfigError:
+            # Profile not found — surface as validation error during validation
+            raise
     if env_prefix or env_separator != "__":
         _deep_merge(cfg, from_env(prefix=env_prefix, separator=env_separator))
     if cli:
         cli_overrides = _parse_cli(schema=schema)
         _deep_merge(cfg, cli_overrides)
+    if validate_schema:
+        errors = validate(cfg, validate_schema)
+        if errors:
+            msg = "\n".join(f"  {e['key']}: {e['message']}" for e in errors)
+            raise ConfigError(f"Config validation failed:\n{msg}")
+    if interpolate:
+        cfg = interpolate_env(cfg, secret_path=secret_path)
     return cfg
 
 
