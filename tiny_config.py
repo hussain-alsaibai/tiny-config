@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Union
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 # ---------- Config Errors ----------
@@ -324,6 +324,138 @@ def get(cfg: Mapping[str, Any], key: str, default: Any = None) -> Any:
 def set(cfg: Dict[str, Any], key: str, value: Any) -> None:
     """Set a value by dotted key."""
     _set_dotted(cfg, key, value)
+
+
+# ---------------------------------------------------------------------------
+# Typed accessors (v0.3.0)
+# ---------------------------------------------------------------------------
+
+
+def get_int(cfg: Mapping[str, Any], key: str, default: int = 0) -> int:
+    """Get an int by dotted key, coercing strings/numbers."""
+    val = get(cfg, key, default)
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def get_bool(cfg: Mapping[str, Any], key: str, default: bool = False) -> bool:
+    """Get a bool by dotted key. Accepts 'true'/'false'/'1'/'0'/'yes'/'no'."""
+    val = get(cfg, key, default)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    if isinstance(val, str):
+        return val.strip().lower() in {"1", "true", "yes", "on", "y", "t"}
+    return default
+
+
+def get_str(cfg: Mapping[str, Any], key: str, default: str = "") -> str:
+    """Get a str by dotted key, coercing numbers."""
+    val = get(cfg, key, default)
+    return str(val) if val is not None else default
+
+
+def get_list(cfg: Mapping[str, Any], key: str, default: Optional[list] = None) -> list:
+    """Get a list by dotted key, splitting comma-separated strings."""
+    val = get(cfg, key, default if default is not None else [])
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        return [item.strip() for item in val.split(",") if item.strip()]
+    return default if default is not None else []
+
+
+def get_float(cfg: Mapping[str, Any], key: str, default: float = 0.0) -> float:
+    """Get a float by dotted key, coercing strings/numbers."""
+    val = get(cfg, key, default)
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+# ---------------------------------------------------------------------------
+# Config watching / auto-reload (v0.3.0)
+# ---------------------------------------------------------------------------
+
+
+class ConfigWatcher:
+    """Watch a config file for changes and auto-reload.
+
+    Polls mtime periodically (cheap) and re-loads + re-merges when the file
+    changes. Useful for agents that need live config without restarting.
+
+    Example:
+        from tiny_config import ConfigWatcher, load_file
+
+        watcher = ConfigWatcher("app.json", interval_sec=1.0)
+        watcher.start()   # begins polling in a background thread
+        cfg = watcher.current()
+        # ... edit app.json on disk ...
+        cfg = watcher.current()   # picks up changes automatically
+        watcher.stop()
+    """
+
+    def __init__(self, path: str, *, interval_sec: float = 1.0,
+                 on_change: Optional[Callable[[Dict[str, Any]], None]] = None):
+        self.path = path
+        self.interval_sec = interval_sec
+        self.on_change = on_change
+        self._cfg: Dict[str, Any] = {}
+        self._mtime: Optional[float] = None
+        self._stop = False
+        self._thread = None
+
+    def start(self) -> "ConfigWatcher":
+        """Start the background polling thread."""
+        if self._thread and self._thread.is_alive():
+            return self
+        self._cfg = load_file(self.path)
+        self._mtime = self._current_mtime()
+        self._stop = False
+        import threading
+        self._thread = threading.Thread(target=self._poll, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop = True
+        if self._thread:
+            self._thread.join(timeout=self.interval_sec * 2 + 0.1)
+            self._thread = None
+
+    def current(self) -> Dict[str, Any]:
+        """Return the latest config, reloading if the file changed."""
+        new_mtime = self._current_mtime()
+        if new_mtime is not None and new_mtime != self._mtime:
+            self._cfg = load_file(self.path)
+            self._mtime = new_mtime
+            if self.on_change:
+                self.on_change(self._cfg)
+        return self._cfg
+
+    def _current_mtime(self) -> Optional[float]:
+        try:
+            return os.path.getmtime(self.path)
+        except OSError:
+            return None
+
+    def _poll(self) -> None:
+        import time as _t
+        while not self._stop:
+            _t.sleep(self.interval_sec)
+            try:
+                self.current()
+            except Exception:
+                pass
+
+
+def snapshot(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """Deep-copy a config dict for safe mutation or comparison."""
+    return json.loads(json.dumps(dict(cfg)))
 
 
 # ---------------------------------------------------------------------------
