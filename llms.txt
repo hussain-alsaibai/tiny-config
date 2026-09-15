@@ -1,0 +1,88 @@
+# tiny-config
+
+> Zero-dependency configuration loader for Python. JSON / YAML / INI / .env / CLI / Docker secrets — one call. Designed to be fully described to AI coding agents via this manifest.
+
+- Version: 0.3.0
+- License: MIT
+- Repository: https://github.com/hussain-alsaibai/tiny-config
+- Language: Python (3.8+)
+- Runtime dependencies: 0
+- Install: `pip install tiny-config` (or copy `tiny_config.py`)
+- Docs: README.md, `pyproject.toml`, `bench_tiny_config.py`
+
+## What this library does
+
+Loads and merges configuration from multiple sources with a clear precedence chain:
+defaults < file < profile < env < CLI.
+
+Supports JSON, YAML (subset), INI, .env, OS environment variables, CLI flags, Docker
+secrets (`/run/secrets`), profiles (dev/staging/prod), `${env:VAR}` and `${secret:NAME}`
+interpolation, and dotted/double-underscore key access.
+
+## When to use it
+
+- You need a config loader smaller than `dynaconf` (~50KB) or `pydantic-settings` (~200KB).
+- You want zero transitive dependencies.
+- You want auto-reload when config files change.
+- You need typed accessors (`.int()`, `.bool()`, `.list()`) that coerce safely.
+- You use Docker secrets or 12-factor env vars in production.
+
+## When NOT to use it
+
+- You need async config reload (sync only).
+- You need TOML with full spec (subset only).
+- You need a full validation framework — pair with `tiny-validator` for that.
+
+## Public API (callable surface)
+
+- `tiny_config.load(file=..., profile=..., env_prefix=..., defaults=...) -> dict`
+- `tiny_config.get(cfg, key, default=...)` — dotted or `__` access
+- `tiny_config.set(cfg, key, value)` — dotted
+- `tiny_config.TypedConfig(cfg)` — typed accessors: `.int()`, `.bool()`, `.list()`, `.str()`, `.float()`
+- `tiny_config.ConfigWatcher(file, on_change=...)` — auto-reload callback
+- `tiny_config.snapshot(cfg)` — frozen deepcopy for hashing/comparison
+
+## Code example
+
+```python
+import tiny_config as tc
+
+cfg = tc.load(
+    file="config.yaml",
+    env_prefix="MYAPP",
+    defaults={"db": {"port": 5432}, "debug": False},
+)
+
+typed = tc.TypedConfig(cfg)
+port = typed.int("db.port", default=5432)
+debug = typed.bool("debug")
+
+watcher = tc.ConfigWatcher("config.yaml", on_change=lambda new_cfg: print(new_cfg))
+watcher.start()  # runs forever in background thread
+```
+
+## Integration with the tiny-* ecosystem
+
+- After `tiny_validator` validates, `tiny_config` produces the typed values.
+- `tiny-log` reads log level from `cfg["log"]["level"]`.
+- `tiny-cli` writes CLI flags via `tc.set(cfg, ...)` before re-export.
+
+## Compatibility
+
+- Python 3.8 – 3.13 confirmed.
+- No C extensions. No native dependencies.
+- Works on Linux, macOS, Windows (file watcher via watchdog-free polling).
+
+## Common pitfalls
+
+1. `file=` path is resolved relative to CWD; pass absolute paths in containers.
+2. Profile name is read from `CONFIG_PROFILE` env or `profile=` arg — not auto-detected.
+3. Docker secrets must have file mode 0400 and end in newline or last line is ignored.
+4. YAML support is a subset (mappings, sequences, scalars, anchors) — no custom tags.
+
+## Changelog
+
+- 0.3.0 — TypedConfig, ConfigWatcher, snapshot
+- 0.2.0 — schema validation, secrets, profiles, env interpolation
+- 0.1.0 — initial release
+
