@@ -3,10 +3,16 @@
 Loads from multiple sources with a clear precedence order:
   defaults < file (json/yaml/ini/env) < profile < env vars < CLI overrides
 
-v0.2.0 adds: schema validation, Docker secrets, profile loading, ${env:VAR}
-interpolation, ${secret:NAME} interpolation.
+v0.4.0 adds: FrozenConfig (immutable view), to_dict/to_json serialization,
+to_json_schema generator (reverse of validate), mask_secrets for safe logging.
 
-Single file, no deps, MIT, 100% typed, public API in 10 functions.
+v0.3.0 added: typed accessors (get_int/get_str/get_bool/get_float/get_list),
+ConfigWatcher (live reload via mtime polling), snapshot() helper.
+
+v0.2.0 added: schema validation, Docker secrets, profile loading,
+${env:VAR} and ${secret:NAME} interpolation.
+
+Single file, no deps, MIT, 100% typed, public API in ~18 functions.
 """
 
 from __future__ import annotations
@@ -20,7 +26,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Union
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 
 # ---------- Config Errors ----------
@@ -34,6 +40,9 @@ class ConfigError(Exception):
 __all__ = [
     "load", "load_file", "get", "set", "merge", "from_env",
     "validate", "get_secret", "load_profile", "ConfigError",
+    "get_int", "get_str", "get_bool", "get_float", "get_list",
+    "snapshot", "ConfigWatcher",
+    "to_dict", "to_json", "to_json_schema", "mask_secrets", "FrozenConfig",
 ]
 
 
@@ -456,6 +465,286 @@ class ConfigWatcher:
 def snapshot(cfg: Mapping[str, Any]) -> Dict[str, Any]:
     """Deep-copy a config dict for safe mutation or comparison."""
     return json.loads(json.dumps(dict(cfg)))
+
+
+# ---------------------------------------------------------------------------
+# v0.4.0 — Safe serialization, secret redaction, frozen views, JSON Schema export
+# ---------------------------------------------------------------------------
+
+
+_DEFAULT_SECRET_KEYS = frozenset({
+    "password", "passwd", "secret", "api_key", "apikey", "token",
+    "access_token", "refresh_token", "auth", "credentials", "private_key",
+})
+
+
+def to_dict(
+    cfg: Mapping[str, Any],
+    *,
+    redact: Optional[Sequence[str]] = None,
+    redact_secret_keys: bool = True,
+) -> Dict[str, Any]:
+    """Return a JSON-safe deep copy of a config dict.
+
+    Useful before logging or sending to a downstream service. By default,
+    values whose key name looks like a secret are masked. Pass an explicit
+    list of dotted keys to additionally redact (e.g., `("db.password", "auth.token")`).
+    Disable the heuristic with `redact_secret_keys=False`.
+
+    Usage:
+        safe = to_dict(cfg)
+        safe = to_dict(cfg, redact=("db.password",), redact_secret_keys=False)
+    """
+    out = json.loads(json.dumps(dict(cfg), default=str))
+    if redact_secret_keys:
+        mask_secrets(out, source={})
+    if redact:
+        for key in redact:
+            val = _get_dotted(out, key, None)
+            if val is not None:
+                _set_dotted(out, key, "***")
+    return out
+
+
+def to_json(
+    cfg: Mapping[str, Any],
+    *,
+    indent: Optional[int] = 2,
+    redact: Optional[Sequence[str]] = None,
+    redact_secret_keys: bool = True,
+    sort_keys: bool = False,
+) -> str:
+    """Serialize a config (with optional secret redaction) to a JSON string.
+
+    Usage:
+        print(to_json(cfg))
+        log.info("config: %s", to_json(cfg, redact=("db.password",)))
+    """
+    return json.dumps(
+        to_dict(cfg, redact=redact, redact_secret_keys=redact_secret_keys),
+        indent=indent,
+        sort_keys=sort_keys,
+        default=str,
+    )
+
+
+def mask_secrets(
+    cfg: Any,
+    *,
+    source: Optional[Mapping[str, Any]] = None,
+    keys: Optional[Sequence[str]] = None,
+    replacement: str = "***",
+) -> Any:
+    """Recursively mask secret-looking values inside a config.
+
+    Operates in-place by default and returns it for chaining. Heuristic: any
+    key (case-insensitive) in `_DEFAULT_SECRET_KEYS`, or matching a custom
+`keys` list, gets its corresponding value substituted. Dict and list structures
+    are descended into; non-string scalar values in matching keys are also
+    masked.
+
+    Pass an explicit `source` mapping to also restore masked values back to
+    their original after a round-trip (paired with `redact=True` in `to_dict`).
+
+    Usage:
+        mask_secrets(cfg)
+        mask_secrets(cfg, keys=("api.token", "oauth.client_secret"))
+    """
+    target_keys = {k.lower() for k in _DEFAULT_SECRET_KEYS}
+    if keys:
+        target_keys.update(k.lower().split(".")[-1] for k in keys)
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for k, v in list(node.items()):
+                if isinstance(k, str) and k.lower() in target_keys:
+                    node[k] = replacement
+                else:
+                    _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(cfg)
+    return cfg
+
+
+_TYPE_MAP_JSON = {
+    "string": str,
+    "integer": int,
+    "number": float,
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+}
+
+
+def to_json_schema(
+    cfg: Mapping[str, Any],
+    *,
+    required_keys: Optional[set[str]] = None,
+    title: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Infer a JSON Schema (draft 2020-12 subset) from a sample config.
+
+    The reverse of :func:`validate`: give it a known config and it produces
+    a JSON Schema describing the observed types. Useful for documenting the
+    "shape" of a service's config without hand-writing one.
+
+    Usage:
+        schema = to_json_schema(cfg)
+        # Round-trip with tiny-validator (cross-lib compatible):
+        # validator.from_json_schema(schema).check(value)
+    """
+    schema: Dict[str, Any] = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": True,
+    }
+    if title:
+        schema["title"] = title
+    props = _build_properties(cfg)
+    schema["properties"] = props
+    if required_keys:
+        schema["required"] = sorted(required_keys)
+    else:
+        required = [k for k, v in props.items() if v.get("_present", True) and not v.get("nullable", False)]
+        if required:
+            schema["required"] = required
+    for v in props.values():
+        v.pop("_present", None)
+    return schema
+
+
+def _build_properties(node: Any) -> Dict[str, Any]:
+    """Build JSON Schema properties dict from a Python sample value."""
+    out: Dict[str, Any] = {}
+    if not isinstance(node, dict):
+        return out
+    for k, v in node.items():
+        prop: Dict[str, Any] = {}
+        if v is None:
+            prop["type"] = "null"
+            prop["nullable"] = True
+            prop["_present"] = False
+        elif isinstance(v, bool):
+            prop["type"] = "boolean"
+        elif isinstance(v, int):
+            prop["type"] = "integer"
+        elif isinstance(v, float):
+            prop["type"] = "number"
+        elif isinstance(v, str):
+            prop["type"] = "string"
+        elif isinstance(v, list):
+            prop["type"] = "array"
+            if v:
+                first = v[0]
+                if isinstance(first, dict):
+                    prop["items"] = {
+                        "type": "object",
+                        "properties": _build_properties(first),
+                    }
+                else:
+                    prop["items"] = {"type": _py_to_json_type(first)}
+            else:
+                prop["items"] = {}
+        elif isinstance(v, dict):
+            prop["type"] = "object"
+            prop["properties"] = _build_properties(v)
+        else:
+            prop["type"] = "string"
+        prop["_present"] = True
+        out[str(k)] = prop
+    return out
+
+
+def _py_to_json_type(value: Any) -> str:
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return "string"
+
+
+class FrozenConfig:
+    """Immutable read-only view over a config dict.
+
+    Wraps a config snapshot and exposes typed accessors without allowing
+    mutation. Useful after :func:`load()` completes — hand the frozen view
+    to downstream code that should not be able to edit settings.
+
+    Usage:
+        cfg = tc.load(file="config.yaml", defaults={...})
+        app_cfg = tc.FrozenConfig(cfg)
+        app_cfg.get("db.host")
+        app_cfg.get_int("db.port")
+        # app_cfg.set("db.port", 9999)  # raises ConfigError
+    """
+
+    __slots__ = ("_cfg",)
+
+    def __init__(self, cfg: Mapping[str, Any]) -> None:
+        object.__setattr__(self, "_cfg", snapshot(cfg))
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise ConfigError(f"FrozenConfig is immutable; cannot set {name!r}")
+
+    def __delattr__(self, name: str) -> None:
+        raise ConfigError(f"FrozenConfig is immutable; cannot delete {name!r}")
+
+    def _raw(self) -> Dict[str, Any]:
+        return self._cfg
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return get(self._cfg, key, default)
+
+    def get_int(self, key: str, default: int = 0) -> int:
+        return get_int(self._cfg, key, default)
+
+    def get_str(self, key: str, default: str = "") -> str:
+        return get_str(self._cfg, key, default)
+
+    def get_bool(self, key: str, default: bool = False) -> bool:
+        return get_bool(self._cfg, key, default)
+
+    def get_float(self, key: str, default: float = 0.0) -> float:
+        return get_float(self._cfg, key, default)
+
+    def get_list(self, key: str, default: Optional[list] = None) -> list:
+        return get_list(self._cfg, key, default)
+
+    def to_dict(self, *, redact: Optional[Sequence[str]] = None,
+                redact_secret_keys: bool = True) -> Dict[str, Any]:
+        return to_dict(self._cfg, redact=redact, redact_secret_keys=redact_secret_keys)
+
+    def to_json(self, *, indent: Optional[int] = 2,
+                redact: Optional[Sequence[str]] = None,
+                redact_secret_keys: bool = True) -> str:
+        return to_json(self._cfg, indent=indent, redact=redact, redact_secret_keys=redact_secret_keys)
+
+    def keys(self):
+        return self._cfg.keys()
+
+    def __contains__(self, key: str) -> bool:
+        return _get_dotted(self._cfg, key.replace("__", "."), _SENTINEL) is not _SENTINEL
+
+    def __iter__(self):
+        return iter(self._cfg)
+
+    def __repr__(self) -> str:
+        return f"FrozenConfig({list(self._cfg.keys())!r})"
+
+
+_SENTINEL = object()
 
 
 # ---------------------------------------------------------------------------
