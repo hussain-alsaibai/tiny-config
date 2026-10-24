@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tiny-config"
-version = "0.1.0"
+version = "0.4.0"
 description = "Zero-dependency configuration loader for Python. JSON / YAML / INI / .env / CLI flags — one call."
 readme = "README.md"
 license = {text = "MIT"}
