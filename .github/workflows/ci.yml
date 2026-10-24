@@ -14,4 +14,4 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install pytest
-      - run: python -m pytest test_tiny_config.py -v
+      - run: python -m pytest test_tiny_config.py test_v040_serialization.py test_version_consistency.py -v
