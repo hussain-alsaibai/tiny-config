@@ -3,8 +3,11 @@
 > Zero-dependency configuration loader for Python. JSON / YAML / INI / .env / CLI / Docker secrets — one call.
 
 ```bash
-pip install tiny-config   # coming soon
+# From GitHub (recommended -- not yet on PyPI)
+pip install git+https://github.com/hussain-alsaibai/tiny-config.git
 ```
+
+Or copy `tiny_config.py` into your project — one file, zero dependencies.
 
 ![version 0.2.0](https://img.shields.io/badge/version-0.2.0-blue)
 
