@@ -1,4 +1,5 @@
 # tiny-config
+[![CI](https://github.com/hussain-alsaibai/tiny-config/actions/workflows/ci.yml/badge.svg)](https://github.com/hussain-alsaibai/tiny-config/actions/workflows/ci.yml)
 
 > Zero-dependency configuration loader for Python. JSON / YAML / INI / .env / CLI / Docker secrets — one call.
 
