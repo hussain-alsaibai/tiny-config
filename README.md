@@ -1,6 +1,12 @@
 # tiny-config
 [![CI](https://github.com/hussain-alsaibai/tiny-config/actions/workflows/ci.yml/badge.svg)](https://github.com/hussain-alsaibai/tiny-config/actions/workflows/ci.yml)
 
+[![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Zero Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](tiny_config.py)
+[![CI](https://github.com/hussain-alsaibai/tiny-config/actions/workflows/ci.yml/badge.svg)](https://github.com/hussain-alsaibai/tiny-config/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/hussain-alsaibai/tiny-config)
+
 > Zero-dependency configuration loader for Python. JSON / YAML / INI / .env / CLI / Docker secrets — one call.
 
 ```bash
@@ -9,8 +15,6 @@ pip install git+https://github.com/hussain-alsaibai/tiny-config.git
 ```
 
 Or copy `tiny_config.py` into your project — one file, zero dependencies.
-
-![version 0.2.0](https://img.shields.io/badge/version-0.2.0-blue)
 
 ## Why?
 
@@ -182,9 +186,17 @@ defaults  <  file (lowest index wins)  <  profile  <  env vars  <  CLI flags
 ## Tests
 
 ```bash
-python -m pytest test_tiny_config.py -q
-# Ran 15 tests in 0.04s — OK
+python -m pytest -q
+# 54 tests passed
 ```
+
+| File | Tests |
+|------|-------|
+| `test_tiny_config.py` | 15 |
+| `test_v040_serialization.py` | 37 |
+| `test_version_consistency.py` | 2 |
+
+CI runs the suite on Python 3.8 through 3.12.
 
 ## Reports
 
