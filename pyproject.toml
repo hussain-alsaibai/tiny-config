@@ -23,3 +23,6 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+
+[tool.setuptools]
+py-modules = ["tiny_config", "typed"]

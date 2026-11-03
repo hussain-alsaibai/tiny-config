@@ -14,4 +14,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install pytest
-      - run: python -m pytest test_tiny_config.py test_v040_serialization.py test_version_consistency.py -v
+      # tiny-validator is not on PyPI yet, so the schema-aware loader's
+      # dependency is installed straight from the repo, pinned to a commit
+      # SHA rather than a branch so the build cannot drift.
+      - name: Install tiny-validator
+        run: pip install "git+https://github.com/hussain-alsaibai/tiny-validator.git@432f142a4318b246c06e1f7e98c0fa85c3aeb868"
+      - run: python -m pytest test_tiny_config.py test_v040_serialization.py test_version_consistency.py test_typed.py -v

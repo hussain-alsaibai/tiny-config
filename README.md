@@ -183,6 +183,38 @@ defaults  <  file (lowest index wins)  <  profile  <  env vars  <  CLI flags
   load_file (json)                   35.292 µs/op
 ```
 
+## U0001F9EC Schema-aware config
+
+`load()` gives you the merged config dict. `load_typed()` also validates it
+against a [tiny-validator](https://github.com/hussain-alsaibai/tiny-validator)
+schema, coerces the strings a config file contains into the types the schema
+declares, and fills in defaults.
+
+```python
+from tiny_validator import Schema, String, Integer, Boolean
+from typed import load_typed
+
+app_schema = Schema({
+    "name": String(min_length=1),
+    "port": Integer(min_value=1, max_value=65535, default=8080),
+    "debug": Boolean(default=False),
+})
+
+cfg = load_typed("app.toml", schema=app_schema)
+# cfg == {"name": "demo", "port": 8080, "debug": False}
+
+```
+
+Config files are text, so a port arrives as the string `"8080"` and a flag as
+the string `"true"`. Those are coerced before validation, because the
+validator checks types. A value that cannot be coerced is passed through
+unchanged so the validator reports it - coercion must not hide a bad value.
+
+tiny-validator is an optional dependency: it is only needed when you pass a
+`schema=`. Without one, `load_typed()` behaves exactly like `load()`.
+
+Stdlib only otherwise.
+
 ## Tests
 
 ```bash
