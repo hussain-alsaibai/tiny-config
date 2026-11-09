@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Union
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 
 # ---------- Config Errors ----------
@@ -609,12 +609,28 @@ def to_json_schema(
     if required_keys:
         schema["required"] = sorted(required_keys)
     else:
-        required = [k for k, v in props.items() if v.get("_present", True) and not v.get("nullable", False)]
+        required = [k for k, v in props.items() if v.get("_present", True) and not v.get("_nullable", False)]
         if required:
             schema["required"] = required
-    for v in props.values():
-        v.pop("_present", None)
+    # Strip every private inference marker before returning. `_present` is
+    # bookkeeping for the `required` computation above; once that is done it
+    # must not survive anywhere in the document, including inside nested
+    # objects and `items.properties`, or the result is not valid JSON Schema
+    # and `tiny_validator.from_json_schema()` rejects it.
+    _strip_private_keys(schema)
     return schema
+
+
+def _strip_private_keys(node: Any) -> None:
+    """Recursively remove private (underscore-prefixed) keys from a schema."""
+    if isinstance(node, dict):
+        for key in [k for k in node if isinstance(k, str) and k.startswith("_")]:
+            del node[key]
+        for value in node.values():
+            _strip_private_keys(value)
+    elif isinstance(node, list):
+        for item in node:
+            _strip_private_keys(item)
 
 
 def _build_properties(node: Any) -> Dict[str, Any]:
@@ -626,7 +642,11 @@ def _build_properties(node: Any) -> Dict[str, Any]:
         prop: Dict[str, Any] = {}
         if v is None:
             prop["type"] = "null"
-            prop["nullable"] = True
+            # `nullable` is an OpenAPI-3 spelling, not JSON Schema; draft
+            # 2020-12 permits null through a type union. Keeping the OpenAPI
+            # key made the schema invalid for strict consumers (tiny_validator
+            # rejects it as an unsupported keyword).
+            prop["_nullable"] = True
             prop["_present"] = False
         elif isinstance(v, bool):
             prop["type"] = "boolean"

@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](tiny_config.py)
 [![CI](https://github.com/hussain-alsaibai/tiny-config/actions/workflows/ci.yml/badge.svg)](https://github.com/hussain-alsaibai/tiny-config/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/hussain-alsaibai/tiny-config)
+[![Version](https://img.shields.io/badge/version-0.4.1-blue)](https://github.com/hussain-alsaibai/tiny-config)
 
 > Zero-dependency configuration loader for Python. JSON / YAML / INI / .env / CLI / Docker secrets — one call.
 

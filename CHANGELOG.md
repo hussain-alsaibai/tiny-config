@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.4.1 — 2026-11-09
+
+Bug fixes:
+- `to_json_schema()` emitted private inference markers (`_present`) into the
+  returned document, but only stripped them from **top-level** properties.
+  Any nested object or `items.properties` kept the marker, which made the
+  output invalid JSON Schema and caused `tiny_validator.from_json_schema()`
+  to raise `ValueError: property 'host': unsupported keywords: ['_present']`.
+  The documented v0.4.0 round-trip therefore only worked for flat configs.
+  Markers are now stripped recursively.
+- `to_json_schema()` spelled a null-sampled field as `{"type": "null",
+  "nullable": true}`. `nullable` is an OpenAPI 3 keyword, not JSON Schema
+  draft 2020-12, so strict consumers rejected the schema with
+  `unsupported keywords: ['nullable']`. Nullability is now expressed through
+  the private not-required marker only, and the emitted document carries
+  `{"type": "null"}` alone.
+- Added regression tests that assert no underscore-prefixed key appears
+  anywhere in a nested schema, and that a nested property's key set is
+  exactly `{"type"}`. Both fail against v0.4.0.
+
 ## v0.4.0 — 2026-10-04
 
 New features:

@@ -192,9 +192,32 @@ class TestToJsonSchema(unittest.TestCase):
         schema = tc.to_json_schema(cfg)
         b_prop = schema["properties"]["b"]
         self.assertEqual(b_prop["type"], "null")
-        self.assertTrue(b_prop.get("nullable"))
+        # `nullable` is an OpenAPI spelling and makes the document invalid
+        # JSON Schema for strict consumers; the private marker must not leak.
+        self.assertNotIn("nullable", b_prop)
+        self.assertNotIn("_nullable", b_prop)
         # b should NOT be in required (it was None in the sample)
         self.assertNotIn("b", schema.get("required", []))
+
+    def test_no_private_markers_leak_anywhere(self):
+        """Every inference marker must be stripped, including nested ones."""
+        cfg = {
+            "db": {"host": "localhost", "port": 5432},
+            "servers": [{"host": "a", "port": 1}],
+            "opt": None,
+        }
+        schema = tc.to_json_schema(cfg)
+        blob = json.dumps(schema)
+        self.assertNotIn("_present", blob)
+        self.assertNotIn("_nullable", blob)
+        self.assertNotIn("nullable", blob)
+
+    def test_nested_schema_is_valid_json_schema(self):
+        """A strict consumer must accept a nested schema."""
+        schema = tc.to_json_schema({"db": {"host": "localhost", "port": 5432}})
+        props = schema["properties"]["db"]["properties"]
+        self.assertEqual(set(props["host"]), {"type"})
+        self.assertEqual(set(props["port"]), {"type"})
 
     def test_schema_version(self):
         schema = tc.to_json_schema({"x": 1})
