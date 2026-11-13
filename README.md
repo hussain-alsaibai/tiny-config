@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](tiny_config.py)
 [![CI](https://github.com/hussain-alsaibai/tiny-config/actions/workflows/ci.yml/badge.svg)](https://github.com/hussain-alsaibai/tiny-config/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.4.1-blue)](https://github.com/hussain-alsaibai/tiny-config)
+[![Version](https://img.shields.io/badge/version-0.4.2-blue)](https://github.com/hussain-alsaibai/tiny-config)
 
 > Zero-dependency configuration loader for Python. JSON / YAML / INI / .env / CLI / Docker secrets — one call.
 
@@ -93,6 +93,48 @@ Files searched (in order):
 - `production.yaml`
 - `production.yml`
 - ...
+
+### Logging a config without leaking it
+
+```python
+import tiny_config as tc
+
+cfg = tc.load(file="config.yaml")
+print(tc.to_json(cfg))
+```
+
+```json
+{
+  "db": { "host": "db.internal", "password": "***" },
+  "github_token": "***",
+  "tokenizer": "bpe",
+  "secret_ref": "vault://team/api",
+  "auth_mode": "mtls"
+}
+```
+
+Three things to notice, because the heuristic used to get all three wrong:
+
+- `db_password` and `github_token` are masked even though they are not
+  bare `password` / `token` keys -- a credential word at the **end** of a
+  name counts.
+- `tokenizer` and `secret_ref` are **not** masked, even though they contain
+  `token` and `secret`. One names an algorithm, the other names where the
+  secret lives; masking either makes the log useless.
+- A pointer value (`vault://...`, `awssm://...`, `op://...`, `env://...`) is
+  never replaced by `***`, because the pointer is not the credential.
+
+Add explicit keys when your naming is unusual:
+
+```python
+cfg = {"oauth": {"client_id_hash": "sha256:9f2", "client_id": "svc-1"}}
+# An explicit keys= entry masks regardless of how the key is spelled.
+masked = tc.to_dict(cfg, redact=("oauth.client_id_hash",))
+
+# Opt out of the name heuristic entirely (keys= still applies).
+raw = tc.to_dict(cfg, redact_secret_keys=False)
+assert raw["oauth"]["client_id_hash"] == "sha256:9f2"
+```
 
 ### Docker secrets
 

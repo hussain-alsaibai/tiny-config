@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.4.2 — 2026-11-13
+
+Bug fixes:
+- `to_dict()` / `to_json()` / `mask_secrets()` masked on **substring** match,
+  not name match. Any key containing a sensitive word was redacted, so
+  `secret_ref` (a pointer into Vault), `tokenizer` and `auth_mode` came back
+  as `***`. The redacted config is the one people paste into a bug report,
+  and the fields it erased were exactly the ones that make a config
+  diagnosable. Detection is now equality against the known names, or a
+  **suffix** match (`db_password`, `github_token`, `client_secret`). Those
+  were previously *missed* whenever the credential word was not a standalone
+  key, so this fixes a leak in the same change as the over-masking.
+- An explicit `redact=` / `keys=` entry masked a secret-manager pointer.
+  `mask_secrets({"password": "vault://prod/db"}, keys=("password",))` replaced
+  the only record of where the secret lives with `***`. Pointer values
+  (`vault://`, `awssm://`, `gcp-sm://`, `op://`, `env://`) and empty strings
+  now pass through even when the key is named explicitly.
+- Non-string dict keys reached `.lower()` and raised `AttributeError` instead
+  of being masked or skipped.
+
+Added:
+- `test_v042_secret_heuristic.py` — 9 tests. Three of them fail against
+  v0.4.1: the two false-negative cases (`db_password`, `github_token`) and
+  the pointer case. The false-positive cases passed before and still pass,
+  so the fix cannot have been bought by widening the mask.
+
 ## v0.4.1 — 2026-11-09
 
 Bug fixes:

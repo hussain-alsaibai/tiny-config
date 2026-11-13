@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Union
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 
 # ---------- Config Errors ----------
@@ -472,10 +472,53 @@ def snapshot(cfg: Mapping[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+# Matched by *equality* against the lowercased key, so a compound key such as
+# "secret_ref" or "tokenizer" is not mistaken for a credential.
 _DEFAULT_SECRET_KEYS = frozenset({
     "password", "passwd", "secret", "api_key", "apikey", "token",
     "access_token", "refresh_token", "auth", "credentials", "private_key",
 })
+
+# Matched as a *suffix* of the lowercased key. "db_password", "client_secret"
+# and "GH_TOKEN" are secrets; "secret_ref" and "tokenizer" are not, because
+# the sensitive word is not at the end of the name.
+_SECRET_KEY_SUFFIXES = frozenset({
+    "password", "passwd", "secret", "apikey", "api_key", "token",
+    "private_key", "access_key", "auth_token", "credentials",
+})
+
+# Values that carry no secret even when the key name says otherwise: a
+# pointer into a secret manager is not the secret itself.
+_NON_SECRET_SCHEMES = ("vault://", "awssm://", "gcp-sm://", "op://", "env://")
+
+
+def _is_non_secret_reference(value: Any) -> bool:
+    """True when `value` is a URI pointing at a secret, not the secret."""
+    if not isinstance(value, str):
+        return False
+    lowered = value.strip().lower()
+    return lowered == "" or lowered.startswith(_NON_SECRET_SCHEMES)
+
+
+def _looks_like_secret_key(key: str) -> bool:
+    """Decide whether `key` names a credential.
+
+    Two rules, both deliberately narrow:
+
+    * the whole lowercased key is in ``_DEFAULT_SECRET_KEYS`` (``token``,
+      ``auth``), or
+    * the key *ends with* one of ``_SECRET_KEY_SUFFIXES`` (``db_password``,
+      ``github_token``).
+
+    Substring matching is not used. It masked ``tokenizer`` and
+    ``secret_ref``, which are configuration about a credential, not the
+    credential -- and a masked non-secret makes the redacted config useless
+    for the debugging it exists for.
+    """
+    lowered = key.lower()
+    if lowered in _DEFAULT_SECRET_KEYS:
+        return True
+    return any(lowered.endswith(suffix) for suffix in _SECRET_KEY_SUFFIXES)
 
 
 def to_dict(
@@ -557,7 +600,16 @@ def mask_secrets(
     def _walk(node: Any) -> None:
         if isinstance(node, dict):
             for k, v in list(node.items()):
-                if isinstance(k, str) and k.lower() in target_keys:
+                if not isinstance(k, str):
+                    _walk(v)
+                    continue
+                explicit = k.lower().split(".")[-1] in target_keys
+                if explicit and _is_non_secret_reference(v):
+                    # An explicit `keys=` entry still yields to a pointer
+                    # value: masking "vault://prod/db" hides nothing and
+                    # destroys the only record of where the secret lives.
+                    _walk(v)
+                elif explicit or _looks_like_secret_key(k):
                     node[k] = replacement
                 else:
                     _walk(v)
