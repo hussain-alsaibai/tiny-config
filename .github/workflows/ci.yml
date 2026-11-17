@@ -21,4 +21,15 @@ jobs:
       # SHA rather than a branch so the build cannot drift.
       - name: Install tiny-validator
         run: pip install "git+https://github.com/hussain-alsaibai/tiny-validator.git@432f142a4318b246c06e1f7e98c0fa85c3aeb868"
-      - run: python -m pytest test_tiny_config.py test_v040_serialization.py test_version_consistency.py test_typed.py -v
+      # Every test file must be named here. test_v042_secret_heuristic.py
+      # was written for 0.4.2 and left off this line, so the 9 tests that
+      # justify the masking fix never ran in CI.
+      - run: >
+          python -m pytest
+          test_tiny_config.py
+          test_v040_serialization.py
+          test_v042_secret_heuristic.py
+          test_llms_drift.py
+          test_version_consistency.py
+          test_typed.py
+          -v

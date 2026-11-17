@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — docs
+
+- `llms.txt` advertised `Version: 0.3.0` against a 0.4.2 package and omitted
+everything 0.4.x added: `to_json_schema`, `mask_secrets`, `get_secret`,
+`interpolate_env`, `load_profile`, `FrozenConfig`, and the `get_*` accessors.
+It also documented a `TypedConfig` class that **was never implemented** — the
+"Code example" called `.int("db.port")` on it and raised `AttributeError`.
+- `test_llms_drift.py` (49 tests) checks the version header, the Python floor,
+the API list in both directions, and asserts the documented masking table
+against the real `mask_secrets`. 20 tests fail against the previous file.
+- CI now runs `test_v042_secret_heuristic.py`, which was written for 0.4.2 but
+never added to the workflow — the 9 tests justifying the masking fix have not
+been running.
+
 ## v0.4.2 — 2026-11-13
 
 Bug fixes:

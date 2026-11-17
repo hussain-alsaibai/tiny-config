@@ -1,8 +1,8 @@
 # tiny-config
 
-> Zero-dependency configuration loader for Python. JSON / YAML / INI / .env / CLI / Docker secrets — one call. Designed to be fully described to AI coding agents via this manifest.
+> Zero-dependency configuration loader for Python. JSON / YAML / INI / .env / CLI / Docker secrets — one call, one precedence chain, and a JSON Schema export safe to hand to an agent.
 
-- Version: 0.3.0
+- Version: 0.4.2
 - License: MIT
 - Repository: https://github.com/hussain-alsaibai/tiny-config
 - Language: Python (3.8+)
@@ -12,35 +12,63 @@
 
 ## What this library does
 
-Loads and merges configuration from multiple sources with a clear precedence chain:
-defaults < file < profile < env < CLI.
+Loads and merges configuration from multiple sources with a clear precedence
+chain: defaults < file < profile < env < CLI.
 
-Supports JSON, YAML (subset), INI, .env, OS environment variables, CLI flags, Docker
-secrets (`/run/secrets`), profiles (dev/staging/prod), `${env:VAR}` and `${secret:NAME}`
-interpolation, and dotted/double-underscore key access.
+Supports JSON, YAML (subset), INI, .env, OS environment variables, CLI flags,
+Docker secrets (`/run/secrets`), profiles (dev/staging/prod), `${env:VAR}` and
+`${secret:NAME}` interpolation, dotted and double-underscore key access, and a
+JSON Schema export of the merged shape.
 
 ## When to use it
 
 - You need a config loader smaller than `dynaconf` (~50KB) or `pydantic-settings` (~200KB).
 - You want zero transitive dependencies.
 - You want auto-reload when config files change.
-- You need typed accessors (`.int()`, `.bool()`, `.list()`) that coerce safely.
-- You use Docker secrets or 12-factor env vars in production.
+- You need typed accessors that coerce safely instead of returning strings (`get_int`, `get_bool`, ...).
+- You need a schema of your *actual* config to hand to an agent or a validator.
+- You need to paste a config into a bug report without leaking credentials.
 
 ## When NOT to use it
 
 - You need async config reload (sync only).
-- You need TOML with full spec (subset only).
+- You need full TOML spec (subset only).
 - You need a full validation framework — pair with `tiny-validator` for that.
 
-## Public API (callable surface)
+## Public API
 
-- `tiny_config.load(file=..., profile=..., env_prefix=..., defaults=...) -> dict`
-- `tiny_config.get(cfg, key, default=...)` — dotted or `__` access
-- `tiny_config.set(cfg, key, value)` — dotted
-- `tiny_config.TypedConfig(cfg)` — typed accessors: `.int()`, `.bool()`, `.list()`, `.str()`, `.float()`
-- `tiny_config.ConfigWatcher(file, on_change=...)` — auto-reload callback
-- `tiny_config.snapshot(cfg)` — frozen deepcopy for hashing/comparison
+### Loading and access
+
+- `load(file=..., profile=..., env_prefix=..., defaults=...) -> dict`
+- `load_file(path)` — load one file, format inferred from the suffix
+- `load_profile(name, ...)` — load a named profile
+- `from_env(prefix="", separator="__")` — build a config dict from the environment
+- `merge(*sources)` — deep-merge mappings, later sources win
+- `get(cfg, key, default=None)` / `set(cfg, key, value)` — dotted or `__` access
+- `interpolate_env(value)` — resolve `${env:VAR}` / `${secret:NAME}` in a string
+
+### Typed accessors
+
+- `get_int`, `get_bool`, `get_str`, `get_list`, `get_float`
+- `get_secret(cfg, key)` — returns a secret value without masking it
+- `FrozenConfig(cfg)` — immutable view; mutation raises `ConfigError`
+
+There is no `TypedConfig` class. v0.3.0's `llms.txt` advertised one, with an
+example that called `.int("db.port")` on it; no such class was ever written,
+so the documented example raised `AttributeError` and the typed path was the
+module-level `get_*` functions all along.
+
+### Per-process state and reload
+
+- `ConfigWatcher(file, on_change=...)` — polling watcher, `.start()` / `.stop()`
+- `snapshot(cfg)` — frozen deep copy for hashing and comparison
+
+### Export and safety
+
+- `to_dict(cfg)` / `to_json(cfg)`
+- `to_json_schema(cfg)` — JSON Schema 2020-12 document describing the merged shape
+- `mask_secrets(cfg, keys=...)` — redact credentials before logging or pasting
+- `validate(cfg, schema)` — delegate to `tiny_validator`
 
 ## Code example
 
@@ -53,36 +81,101 @@ cfg = tc.load(
     defaults={"db": {"port": 5432}, "debug": False},
 )
 
-typed = tc.TypedConfig(cfg)
-port = typed.int("db.port", default=5432)
-debug = typed.bool("debug")
+port = tc.get_int(cfg, "db.port", default=5432)
+debug = tc.get_bool(cfg, "debug")
 
 watcher = tc.ConfigWatcher("config.yaml", on_change=lambda new_cfg: print(new_cfg))
-watcher.start()  # runs forever in background thread
+watcher.start()
 ```
+
+## Exporting a schema for agents
+
+`to_json_schema()` turns the config you actually loaded into a JSON Schema
+document. This is the part that makes the library usable from an agent: the
+agent gets a description of every key, its type, and which ones are required,
+without reading your source.
+
+```python
+import json
+import tiny_config as tc
+
+cfg = tc.load(file="config.yaml")
+schema = tc.to_json_schema(cfg)
+
+print(json.dumps(schema, indent=2))
+
+# Hand the schema to a validator, an MCP tool definition, or an OpenAPI doc:
+import tiny_validator as tv
+tv.from_json_schema(schema)
+```
+
+Two properties worth relying on:
+
+1. **No private keys in the output.** Fields inferred as nullable carry a
+   private marker internally; it is stripped recursively, including from
+   nested objects and array items, so the document is valid JSON Schema at
+   every depth. v0.4.0 stripped only the top level, which made
+   `tiny_validator.from_json_schema()` raise on any nested config.
+2. **No `nullable`.** Nullability is expressed through the not-required
+   marker instead. `nullable` is an OpenAPI 3 keyword, not draft 2020-12, and
+   strict consumers reject the whole document over it.
+
+## Masking credentials
+
+The redacted config is the one people paste into issues, so the masker has to
+be right in both directions — and it is the second direction that costs you.
+
+```python
+import tiny_config as tc
+
+tc.mask_secrets({
+    "db_password":    "hunter2",              # masked  (suffix match)
+    "github_token":   "ghp_...",              # masked  (suffix match)
+    "secret_ref":     "vault://prod/db-pass", # KEPT    (pointer)
+    "tokenizer":      "bpe-50k",              # KEPT    (not a credential)
+    "password":       "vault://prod/db",      # KEPT    (pointer, even if named)
+})
+```
+
+The rule is **equality or suffix**, not substring:
+
+| key | substring match | equality-or-suffix |
+|---|---|---|
+| `db_password` | kept (no standalone `password`) | **masked** |
+| `secret_ref` | masked (contains `secret`) | **kept** |
+| `tokenizer` | masked (contains `token`) | **kept** |
+
+So `db_password` used to leak, and `secret_ref` used to vanish — the field
+that says *where the secret lives* is exactly the field an incident needs.
+Pointer values (`vault://`, `awssm://`, `gcp-sm://`, `op://`, `env://`) and
+empty strings pass through even under an explicit `keys=` entry.
 
 ## Integration with the tiny-* ecosystem
 
-- After `tiny_validator` validates, `tiny_config` produces the typed values.
-- `tiny-log` reads log level from `cfg["log"]["level"]`.
-- `tiny-cli` writes CLI flags via `tc.set(cfg, ...)` before re-export.
+- `tiny-validator` validates the loaded dict; `to_json_schema` produces the schema to validate against.
+- `tiny-log` reads its level from `cfg["log"]["level"]`.
+- `tiny-cli` writes CLI flags back via `tc.set(cfg, ...)` before re-export.
+- `tiny-router` reads port and host from the same chain.
 
 ## Compatibility
 
 - Python 3.8 – 3.13 confirmed.
-- No C extensions. No native dependencies.
-- Works on Linux, macOS, Windows (file watcher via watchdog-free polling).
+- No C extensions, no native dependencies.
+- Works on Linux, macOS, Windows (watcher uses polling, not `inotify`).
 
 ## Common pitfalls
 
-1. `file=` path is resolved relative to CWD; pass absolute paths in containers.
-2. Profile name is read from `CONFIG_PROFILE` env or `profile=` arg — not auto-detected.
-3. Docker secrets must have file mode 0400 and end in newline or last line is ignored.
+1. `file=` is resolved relative to CWD; pass an absolute path in containers.
+2. The profile is read from `CONFIG_PROFILE` or `profile=` — it is not auto-detected.
+3. Docker secrets should be mode 0400; a missing trailing newline truncates the last line.
 4. YAML support is a subset (mappings, sequences, scalars, anchors) — no custom tags.
+5. `mask_secrets` never masks a pointer. If you need the pointer gone too, remove the key — masking it destroys the only record of where the secret lives.
 
 ## Changelog
 
-- 0.3.0 — TypedConfig, ConfigWatcher, snapshot
+- 0.4.2 — `mask_secrets` uses equality-or-suffix, not substring; pointers survive `keys=`; non-string keys handled
+- 0.4.1 — `to_json_schema` strips markers recursively; no `nullable` in draft 2020-12 output
+- 0.4.0 — `to_json_schema`, `FrozenConfig`, `get_secret`, `interpolate_env`
+- 0.3.0 — `ConfigWatcher`, `snapshot`
 - 0.2.0 — schema validation, secrets, profiles, env interpolation
 - 0.1.0 — initial release
-
