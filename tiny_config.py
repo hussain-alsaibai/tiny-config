@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Union
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 
 
 # ---------- Config Errors ----------

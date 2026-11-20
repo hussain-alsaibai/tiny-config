@@ -2,12 +2,15 @@
 
 > Zero-dependency configuration loader for Python. JSON / YAML / INI / .env / CLI / Docker secrets — one call, one precedence chain, and a JSON Schema export safe to hand to an agent.
 
-- Version: 0.4.2
+- Version: 0.4.3
 - License: MIT
 - Repository: https://github.com/hussain-alsaibai/tiny-config
 - Language: Python (3.8+)
 - Runtime dependencies: 0
-- Install: `pip install tiny-config` (or copy `tiny_config.py`)
+- Install: `pip install git+https://github.com/hussain-alsaibai/tiny-config.git`
+  (or copy `tiny_config.py`). This project is **unpublished** on PyPI: the
+  name `tiny-config` is not on the index at all, so a bare
+  `pip install tiny-config` would fail with "no matching distribution".
 - Docs: README.md, `pyproject.toml`, `bench_tiny_config.py`
 
 ## What this library does
